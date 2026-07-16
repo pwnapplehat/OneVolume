@@ -14,6 +14,8 @@ and you stop riding the volume keys.
 
 Free · open source · no ads · no telemetry · no drivers · no admin
 
+<img src="docs/screenshots/app.png" width="560" alt="OneVolume leveling two live apps toward the same loudness"/>
+
 </div>
 
 ---
