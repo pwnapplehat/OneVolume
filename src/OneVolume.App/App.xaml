@@ -1,0 +1,20 @@
+﻿<Application x:Class="OneVolume.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
+             ShutdownMode="OnExplicitShutdown">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ui:ThemesDictionary Theme="Dark"/>
+        <ui:ControlsDictionary/>
+      </ResourceDictionary.MergedDictionaries>
+
+      <!-- OneVolume identity: signal green on near-black. -->
+      <SolidColorBrush x:Key="Brush.Accent" Color="#4ADE80"/>
+      <SolidColorBrush x:Key="Brush.AccentDim" Color="#22C55E"/>
+      <SolidColorBrush x:Key="Brush.Muted" Color="#8B98A9"/>
+      <SolidColorBrush x:Key="Brush.Warn" Color="#FBBF24"/>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>

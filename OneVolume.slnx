@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OneVolume.App/OneVolume.App.csproj" />
+    <Project Path="src/OneVolume.Cli/OneVolume.Cli.csproj" />
+    <Project Path="src/OneVolume.Core/OneVolume.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OneVolume.Core.Tests/OneVolume.Core.Tests.csproj" />
+  </Folder>
+</Solution>
