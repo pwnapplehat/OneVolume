@@ -2,6 +2,14 @@
 
 All notable changes to OneVolume are documented here.
 
+## 1.0.2 — 2026-07-17
+
+### Fixed
+
+- App icon had opaque black corners (the rounded-square background filled the full
+  canvas). Replaced with a proper transparent-corner icon across the exe, window,
+  tray, and README.
+
 ## 1.0.1 — 2026-07-17
 
 Full line-by-line audit of 1.0.0 with real-hardware verification of every fix.
