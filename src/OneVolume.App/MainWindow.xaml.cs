@@ -47,7 +47,8 @@ public partial class MainWindow : FluentWindow
 
     private void OnTrayOpen(object sender, RoutedEventArgs e) => ShowFromTray();
 
-    private void ShowFromTray()
+    /// <summary>Also invoked when a second OneVolume launch signals this instance.</summary>
+    public void ShowFromTray()
     {
         Show();
         WindowState = WindowState.Normal;

@@ -9,12 +9,14 @@ using OneVolume.Core.Settings;
 
 namespace OneVolume.App.ViewModels;
 
-/// <summary>Row in the live sessions list.</summary>
+/// <summary>Row in the live sessions list (one per audio session, keyed by session id).</summary>
 public sealed class SessionRow : INotifyPropertyChanged
 {
     private float _heard;
     private float _volume;
     private string _status = "";
+
+    public required string SessionId { get; init; }
 
     public required string ProcessName { get; init; }
 
@@ -62,12 +64,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly WasapiSessionSource _source = new();
     private readonly LevelingEngine _engine;
     private readonly DispatcherTimer _timer;
+    private string _lastDeviceName = "";
 
     public MainViewModel()
     {
         _appSettings = AppSettings.Load();
         _appSettings.ApplyTo(_levelerSettings);
-        _engine = new LevelingEngine(_source, _levelerSettings);
+        _engine = new LevelingEngine(_source, _levelerSettings, new VolumeJournal());
+
+        // If a previous run crashed while apps were attenuated, put their volumes back
+        // before doing anything else — an attenuated volume must never become permanent.
+        _engine.RecoverOrphanedVolumes();
 
         _timer = new DispatcherTimer(DispatcherPriority.Background)
         {
@@ -97,12 +104,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _appSettings.LevelingEnabled = value;
             if (value)
             {
+                // Heal any app that was left attenuated while we were paused (it may have
+                // been closed during a previous leveling run and reopened just now).
+                _engine.RecoverOrphanedVolumes();
                 _timer.Start();
             }
             else
             {
                 _timer.Stop();
                 _engine.RestoreOriginalVolumes(); // leave the system exactly as found
+                Sessions.Clear(); // don't show frozen "leveling" rows while paused
             }
 
             Save();
@@ -161,19 +172,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         set
         {
             _levelerSettings.ExcludedProcesses.Clear();
-            foreach (string raw in (value ?? "").Split(',', ';'))
+            foreach (string name in ProcessNames.Parse(value))
             {
-                string name = raw.Trim().TrimEnd(".exe".ToCharArray());
-                name = raw.Trim();
-                if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    name = name[..^4];
-                }
-
-                if (name.Length > 0)
-                {
-                    _levelerSettings.ExcludedProcesses.Add(name);
-                }
+                _levelerSettings.ExcludedProcesses.Add(name);
             }
 
             _appSettings.ExcludedProcesses = [.. _levelerSettings.ExcludedProcesses];
@@ -194,34 +195,55 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _engine.Tick();
 
-        // Mirror engine state into the bound rows (update-in-place to avoid list churn).
+        // Mirror engine state into the bound rows, keyed by session id (a process can own
+        // several sessions — keying by PID would create duplicate rows and then crash the
+        // dictionary build on the following tick). Update-in-place to avoid list churn.
         IReadOnlyList<SessionState> states = _engine.LastStates;
-        var byPid = Sessions.ToDictionary(r => r.ProcessId);
-        var seen = new HashSet<int>();
+        var byId = new Dictionary<string, SessionRow>(Sessions.Count);
+        foreach (SessionRow existing in Sessions)
+        {
+            byId[existing.SessionId] = existing;
+        }
 
+        var seen = new HashSet<string>();
         foreach (SessionState s in states)
         {
-            seen.Add(s.ProcessId);
-            if (!byPid.TryGetValue(s.ProcessId, out SessionRow? row))
+            if (!seen.Add(s.Id))
             {
-                row = new SessionRow { ProcessName = s.ProcessName, ProcessId = s.ProcessId };
+                continue; // defensive: never two rows for one session
+            }
+
+            if (!byId.TryGetValue(s.Id, out SessionRow? row))
+            {
+                row = new SessionRow { SessionId = s.Id, ProcessName = s.ProcessName, ProcessId = s.ProcessId };
+                byId[s.Id] = row;
                 Sessions.Add(row);
             }
 
             row.Heard = s.HeardLevel;
             row.Volume = s.Volume;
-            row.Status = s.Excluded ? "excluded" : s.Gated ? "silent" : "leveled";
+            row.Status = s.Excluded ? "excluded"
+                : s.Pinned ? "manual"
+                : s.Gated ? "silent"
+                : s.Correcting ? "leveling"
+                : "steady";
         }
 
         for (int i = Sessions.Count - 1; i >= 0; i--)
         {
-            if (!seen.Contains(Sessions[i].ProcessId))
+            if (!seen.Contains(Sessions[i].SessionId))
             {
                 Sessions.RemoveAt(i);
             }
         }
 
-        OnChanged(nameof(DeviceName));
+        // Device name changes only when the default output actually switches.
+        string device = _source.DeviceName;
+        if (device != _lastDeviceName)
+        {
+            _lastDeviceName = device;
+            OnChanged(nameof(DeviceName));
+        }
     }
 
     private static void ApplyStartWithWindows(bool enable)

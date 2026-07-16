@@ -41,11 +41,17 @@ target loudness that you choose:
   "seasick" up and down; once correcting, it settles cleanly at the target.
 - **Silence gating** — apps that aren't playing are ignored (silence never causes a
   volume change that would blast you later).
+- **You always win** — move any app's slider in the Windows volume mixer and OneVolume
+  pins that session immediately: your explicit choice overrides the algorithm until the
+  app closes or you toggle leveling. It never fights you.
 - **Night mode** — one switch drops the target and tightens the range for late-night
   listening.
 - **Exclusions** — tell it to never touch your game, DAW, or screen reader.
 - **Leaves no trace** — every session volume OneVolume adjusted is restored to exactly
-  what you had the moment you pause it or exit.
+  what you had the moment you pause it or exit. Originals are also journaled to disk the
+  moment leveling touches an app, so even a force-kill or power loss can't make an
+  attenuated volume permanent — the next start heals it (Windows itself persists per-app
+  volumes, so without the journal a crash would silently rewrite your mixer settings).
 
 It's a tiny tray app. Set the target once, forget it exists.
 
@@ -82,18 +88,22 @@ which OneVolume deliberately doesn't do.
 
 ```
 src/OneVolume.Core/   engine: session abstraction, control loop (deadband, hysteresis,
-                      blast clamp, silence gate, exclusions, restore-on-exit),
-                      WASAPI session source, settings
+                      blast clamp, silence gate, exclusions, user-override pinning,
+                      restore-on-exit), crash-safe volume journal, WASAPI session
+                      source, settings
 src/OneVolume.App/    WPF tray app (Windows 11 Fluent), live session meters
 src/OneVolume.Cli/    diagnostics + real-hardware E2E harness (spawns its own tone
                       processes and levels them — never touches your apps in tests)
 tests/                deterministic engine tests against fake sessions
 ```
 
-The control loop is fully unit-tested against fake sessions (convergence, no-boost
-guarantee, gating, exclusions, blast response, ramp limits, restore-exactness), and the
-end-to-end harness verifies real-hardware behavior: two tone processes 17 dB apart
-converge to within 0.1 dB on a live output device.
+The control loop is fully unit-tested against fake sessions — convergence, the no-boost
+guarantee, gating, exclusions, blast response, ramp limits, restore-exactness, user
+override pinning, and crash-recovery journaling (29 tests). Real-hardware end-to-end
+harnesses verify the rest on a live output device: two tone processes 17 dB apart
+converge to within 0.1 dB and are restored to their exact original volumes; a force-kill
+mid-leveling leaves an attenuated session behind (the hazard is real) and the next start
+heals it from the journal; a manual mixer change is respected within a tick.
 
 ## Building
 

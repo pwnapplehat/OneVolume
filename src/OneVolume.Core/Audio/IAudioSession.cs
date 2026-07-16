@@ -12,6 +12,14 @@ public interface IAudioSession
     /// <summary>Stable identity for this session while it lives (device + session instance).</summary>
     string Id { get; }
 
+    /// <summary>
+    /// Identity that survives process restarts (device + app session identifier, no PID).
+    /// Windows persists per-app volumes under this identity, which is what makes crash
+    /// recovery possible: after a force-kill we can match a live session back to the
+    /// original volume we journaled for it.
+    /// </summary>
+    string StableId { get; }
+
     int ProcessId { get; }
 
     string ProcessName { get; }

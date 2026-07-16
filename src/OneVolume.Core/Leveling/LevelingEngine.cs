@@ -12,7 +12,9 @@ public sealed record SessionState(
     float Volume,
     float HeardLevel,
     bool Excluded,
-    bool Gated);
+    bool Gated,
+    bool Pinned,
+    bool Correcting);
 
 /// <summary>
 /// The heart of OneVolume: a deterministic, side-effect-free-except-volume control loop.
@@ -22,23 +24,37 @@ public sealed record SessionState(
 ///   3. steers session volume so heard level (raw × volume) approaches the target —
 ///      attenuation-only, ramped, with a deadband, a silence gate, a blast clamp,
 ///      and per-app exclusions,
-///   4. remembers each session's original volume and restores it on demand
+///   4. respects the user: if a session's volume was changed by anyone else (the Windows
+///      volume mixer, the app itself), that session is PINNED — the user's explicit choice
+///      wins over the algorithm until the session ends or leveling is toggled off/on,
+///   5. remembers each session's original volume and restores it on demand
 ///      (turning OneVolume off must leave the system exactly as found).
 /// The engine holds no Windows handles itself — it works against IAudioSessionSource,
 /// which makes every rule above unit-testable with fake sessions.
 /// </summary>
 public sealed class LevelingEngine
 {
+    /// <summary>
+    /// Tolerance when comparing a session's current volume against the value we last wrote.
+    /// WASAPI stores session volume as a float and round-trips our writes closely; anything
+    /// beyond this is a deliberate external change, not representation noise.
+    /// </summary>
+    private const float ExternalChangeEpsilon = 0.015f;
+
     private readonly IAudioSessionSource _source;
     private readonly LevelerSettings _settings;
+    private readonly VolumeJournal? _journal;
     private readonly Dictionary<string, float> _smoothed = new();
     private readonly Dictionary<string, float> _originalVolume = new();
+    private readonly Dictionary<string, float> _lastSetVolume = new();
+    private readonly HashSet<string> _pinned = new();
     private readonly HashSet<string> _correcting = new();
 
-    public LevelingEngine(IAudioSessionSource source, LevelerSettings settings)
+    public LevelingEngine(IAudioSessionSource source, LevelerSettings settings, VolumeJournal? journal = null)
     {
         _source = source;
         _settings = settings;
+        _journal = journal;
     }
 
     /// <summary>Latest per-session decisions, refreshed by each <see cref="Tick"/>.</summary>
@@ -78,13 +94,42 @@ public sealed class LevelingEngine
                 continue; // session died between snapshot and read
             }
 
-            // First sight of this session: remember the user's own volume for restore.
+            // First sight of this session: remember the user's own volume for restore,
+            // and journal it to disk so a crash can never make an attenuated volume
+            // permanent (Windows persists per-app volumes across app restarts).
+            //
+            // If the journal already knows this app (same StableId) from the current
+            // leveling era, the app was closed and reopened while we were attenuating it —
+            // Windows re-applied the attenuated volume, so the CURRENT volume is ours,
+            // not the user's. Keep the journaled true original as the restore point.
             if (!_originalVolume.ContainsKey(session.Id))
             {
+                if (_journal is not null && _journal.TryGet(session.StableId, out float journaled))
+                {
+                    _originalVolume[session.Id] = journaled;
+                }
+                else
+                {
+                    _originalVolume[session.Id] = volume;
+                    _journal?.Record(session.StableId, volume);
+                }
+            }
+
+            // User override detection: if the volume moved since WE last set it, someone
+            // else changed it deliberately (volume mixer, the app itself). Their choice
+            // wins — pin the session (stop leveling it) and make their value the new
+            // restore point so pause/exit doesn't undo an explicit user action.
+            if (_lastSetVolume.TryGetValue(session.Id, out float lastSet)
+                && Math.Abs(volume - lastSet) > ExternalChangeEpsilon)
+            {
+                _pinned.Add(session.Id);
+                _correcting.Remove(session.Id);
                 _originalVolume[session.Id] = volume;
+                _journal?.Record(session.StableId, volume);
             }
 
             bool excluded = _settings.ExcludedProcesses.Contains(session.ProcessName);
+            bool pinned = _pinned.Contains(session.Id);
 
             // Smoothed pre-volume loudness estimate.
             float previous = _smoothed.TryGetValue(session.Id, out float s) ? s : raw;
@@ -94,7 +139,7 @@ public sealed class LevelingEngine
             bool gated = smoothedNow < _settings.NoiseGate;
             float heard = smoothedNow * volume;
 
-            if (!excluded && !gated)
+            if (!excluded && !pinned && !gated)
             {
                 bool isBlast = raw * volume > blastLevel;
                 if (isBlast)
@@ -104,9 +149,8 @@ public sealed class LevelingEngine
                     _correcting.Add(session.Id);
                     float desired = Math.Clamp(target / Math.Max(raw, 1e-4f), _settings.MinVolume, 1f);
                     float step = Math.Clamp(desired - volume, -_settings.BlastStep, 0f);
-                    if (step < 0)
+                    if (step < 0 && TrySetVolume(session, volume + step))
                     {
-                        TrySetVolume(session, volume + step);
                         volume += step;
                     }
                 }
@@ -136,9 +180,8 @@ public sealed class LevelingEngine
                         {
                             float desired = Math.Clamp(target / Math.Max(smoothedNow, 1e-4f), _settings.MinVolume, 1f);
                             float step = Math.Clamp(desired - volume, -_settings.MaxStep, _settings.MaxStep);
-                            if (Math.Abs(step) > 0.0005f)
+                            if (Math.Abs(step) > 0.0005f && TrySetVolume(session, volume + step))
                             {
-                                TrySetVolume(session, volume + step);
                                 volume += step;
                             }
                         }
@@ -146,9 +189,14 @@ public sealed class LevelingEngine
                 }
             }
 
+            // Record what the volume is as WE leave it this tick — the baseline for
+            // detecting an external (user) change on the next tick.
+            _lastSetVolume[session.Id] = volume;
+
             states.Add(new SessionState(
                 session.Id, session.ProcessId, session.ProcessName,
-                raw, smoothedNow, volume, smoothedNow * volume, excluded, gated));
+                raw, smoothedNow, volume, smoothedNow * volume, excluded, gated,
+                pinned, _correcting.Contains(session.Id)));
         }
 
         // Forget sessions that no longer exist so their state can't leak onto reused ids.
@@ -157,34 +205,98 @@ public sealed class LevelingEngine
     }
 
     /// <summary>
-    /// Puts every session the engine ever adjusted back to the volume the user had set
-    /// before OneVolume touched it. Called when leveling is turned off or the app exits.
+    /// Puts every live session the engine ever adjusted back to the volume the user had
+    /// set before OneVolume touched it. Called when leveling is turned off or the app
+    /// exits. Journal entries are consumed only for the sessions actually restored:
+    /// an app that was closed while attenuated isn't reachable here (Windows keeps its
+    /// attenuated volume persisted), so its entry stays on disk and heals the app the
+    /// next time it appears — at startup recovery or when it's next seen while leveling.
     /// </summary>
     public void RestoreOriginalVolumes()
     {
         IReadOnlyList<IAudioSession> sessions = _source.GetSessions();
         foreach (IAudioSession session in sessions)
         {
-            if (session.IsAlive && _originalVolume.TryGetValue(session.Id, out float original))
+            if (session.IsAlive && _originalVolume.TryGetValue(session.Id, out float original)
+                && TrySetVolume(session, original))
             {
-                TrySetVolume(session, original);
+                _journal?.Remove(session.StableId);
             }
         }
 
         _originalVolume.Clear();
         _smoothed.Clear();
         _correcting.Clear();
+        _pinned.Clear();
+        _lastSetVolume.Clear();
     }
 
-    private static void TrySetVolume(IAudioSession session, float value)
+    /// <summary>
+    /// Startup crash recovery: if a previous run died (force-kill, crash, power loss)
+    /// while sessions were attenuated, their journaled original volumes are still on
+    /// disk. Reapply them to matching live sessions and consume those entries; entries
+    /// for apps that aren't running are kept so they heal on their next appearance.
+    /// Returns how many sessions were fixed.
+    /// </summary>
+    public int RecoverOrphanedVolumes()
+    {
+        if (_journal is null)
+        {
+            return 0;
+        }
+
+        IReadOnlyDictionary<string, float> leftover = _journal.Snapshot();
+        if (leftover.Count == 0)
+        {
+            return 0;
+        }
+
+        int recovered = 0;
+        foreach (IAudioSession session in _source.GetSessions())
+        {
+            if (!session.IsAlive || !leftover.TryGetValue(session.StableId, out float original))
+            {
+                continue;
+            }
+
+            float current;
+            try
+            {
+                current = session.Volume;
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (Math.Abs(current - original) <= 0.01f || TrySetVolume(session, original))
+            {
+                _journal.Remove(session.StableId);
+                if (Math.Abs(current - original) > 0.01f)
+                {
+                    recovered++;
+                }
+            }
+        }
+
+        return recovered;
+    }
+
+    /// <summary>
+    /// Returns false when the write failed (session vanished mid-write) so callers don't
+    /// record a volume that was never applied — a phantom value there would later be
+    /// misread as a user override.
+    /// </summary>
+    private static bool TrySetVolume(IAudioSession session, float value)
     {
         try
         {
             session.Volume = Math.Clamp(value, 0f, 1f);
+            return true;
         }
         catch
         {
-            // Session vanished mid-write — the next tick prunes it.
+            return false; // the next tick prunes the dead session
         }
     }
 
@@ -200,6 +312,12 @@ public sealed class LevelingEngine
             _originalVolume.Remove(key);
         }
 
+        foreach (string key in _lastSetVolume.Keys.Where(k => !alive.Contains(k)).ToList())
+        {
+            _lastSetVolume.Remove(key);
+        }
+
         _correcting.RemoveWhere(k => !alive.Contains(k));
+        _pinned.RemoveWhere(k => !alive.Contains(k));
     }
 }

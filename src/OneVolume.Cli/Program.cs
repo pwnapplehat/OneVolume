@@ -23,6 +23,9 @@ return args.FirstOrDefault()?.ToLowerInvariant() switch
         float.Parse(args[1], CultureInfo.InvariantCulture),
         float.Parse(args[2], CultureInfo.InvariantCulture),
         int.Parse(args[3], CultureInfo.InvariantCulture)),
+    "setvol" => SetVolume(
+        int.Parse(args[1], CultureInfo.InvariantCulture),
+        float.Parse(args[2], CultureInfo.InvariantCulture)),
     "e2e" => RunE2E(args.Length > 1 ? int.Parse(args[1]) : 12),
     _ => Help(),
 };
@@ -31,10 +34,28 @@ static int Help()
 {
     Console.WriteLine("""
         OneVolume CLI
-          onevolume-cli sessions        list app audio sessions (read-only)
-          onevolume-cli e2e [seconds]   real-hardware leveling test using its own tone processes
+          onevolume-cli sessions          list app audio sessions (read-only)
+          onevolume-cli setvol <pid> <v>  set one session's volume (diagnostics/tests)
+          onevolume-cli e2e [seconds]     real-hardware leveling test using its own tone processes
         """);
     return 0;
+}
+
+static int SetVolume(int pid, float volume)
+{
+    using var source = new WasapiSessionSource();
+    foreach (IAudioSession s in source.GetSessions())
+    {
+        if (s.ProcessId == pid)
+        {
+            s.Volume = Math.Clamp(volume, 0f, 1f);
+            Console.WriteLine($"pid {pid}: volume -> {s.Volume:0.00}");
+            return 0;
+        }
+    }
+
+    Console.Error.WriteLine($"no session for pid {pid}");
+    return 1;
 }
 
 static int ListSessions()
@@ -95,6 +116,9 @@ static int RunE2E(int seconds)
         return 1;
     }
 
+    // Capture the pre-engine volumes so we can verify restore-exactness at the end.
+    var originals = filtered.GetSessions().ToDictionary(s => s.ProcessId, s => s.Volume);
+
     Console.WriteLine($"device: {raw.DeviceName}; running engine at 20 Hz for {seconds}s (only touching its own tone processes)\n");
     var clock = Stopwatch.StartNew();
     long nextLog = 0;
@@ -120,15 +144,27 @@ static int RunE2E(int seconds)
 
     Console.WriteLine($"\nfinal heard gap: {gapDb:0.0} dB (started ≈ 16.9 dB)");
 
+    // Restore, then VERIFY on the live sessions that every volume is back exactly.
     engine.RestoreOriginalVolumes();
-    Console.WriteLine("volumes restored to original values");
+    bool restored = true;
+    foreach (IAudioSession s in filtered.GetSessions())
+    {
+        if (originals.TryGetValue(s.ProcessId, out float orig))
+        {
+            float now = s.Volume;
+            bool ok = Math.Abs(now - orig) < 0.02f;
+            restored &= ok;
+            Console.WriteLine($"restore pid={s.ProcessId}: {orig:0.00} -> {now:0.00}  {(ok ? "OK" : "MISMATCH")}");
+        }
+    }
 
     try { loud.Kill(); } catch { }
     try { quiet.Kill(); } catch { }
 
-    bool pass = gapDb < 4.0;
-    Console.WriteLine(pass ? "\nE2E PASS: real-hardware leveling through the engine works."
-                           : "\nE2E FAIL: convergence outside 4 dB.");
+    bool pass = gapDb < 4.0 && restored;
+    Console.WriteLine(pass ? "\nE2E PASS: real-hardware leveling + exact restore verified."
+        : restored ? "\nE2E FAIL: convergence outside 4 dB."
+        : "\nE2E FAIL: volumes were not restored exactly.");
     return pass ? 0 : 2;
 }
 

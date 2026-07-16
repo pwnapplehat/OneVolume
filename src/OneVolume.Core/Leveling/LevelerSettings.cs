@@ -27,8 +27,9 @@ public sealed class LevelerSettings
     public float NoiseGate { get; set; } = 0.01f;
 
     /// <summary>
-    /// Per-tick smoothing factor 0..1 for the loudness estimate (exponential moving average
-    /// over ~1 s at 20 Hz with 0.15). Higher = reacts faster but pumps more.
+    /// Per-tick smoothing factor 0..1 for the loudness estimate (exponential moving
+    /// average; at 20 Hz with 0.15 the time constant is ≈ 0.3 s). Higher = reacts
+    /// faster but pumps more.
     /// </summary>
     public float MeterSmoothing { get; set; } = 0.15f;
 

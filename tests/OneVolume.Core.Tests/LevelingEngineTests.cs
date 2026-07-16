@@ -10,12 +10,14 @@ internal sealed class FakeSession : IAudioSession
     public FakeSession(string id, string processName, float rawPeak)
     {
         Id = id;
+        StableId = "stable|" + id;
         ProcessName = processName;
         RawPeak = rawPeak;
         ProcessId = Math.Abs(id.GetHashCode());
     }
 
     public string Id { get; }
+    public string StableId { get; set; }
     public int ProcessId { get; }
     public string ProcessName { get; }
     public float RawPeak { get; set; }
@@ -207,5 +209,91 @@ public class LevelingEngineTests
             Assert.True(delta <= settings.BlastStep + 0.001f, $"step {delta} exceeded max allowed");
             previous = loud.Volume;
         }
+    }
+
+    [Fact]
+    public void User_volume_change_pins_session_and_engine_stops_fighting()
+    {
+        (LevelingEngine engine, FakeSource source, _) = Make();
+        var loud = new FakeSession("a", "video", rawPeak: 0.9f);
+        source.Sessions.Add(loud);
+        RunTicks(engine, 150); // engine attenuates the loud app
+        Assert.True(loud.Volume < 0.5f);
+
+        // The user drags the mixer slider up — their choice must win.
+        loud.Volume = 0.85f;
+        RunTicks(engine, 100);
+
+        Assert.Equal(0.85f, loud.Volume, 3); // engine did not fight back
+        SessionState state = engine.LastStates.Single();
+        Assert.True(state.Pinned);
+    }
+
+    [Fact]
+    public void User_change_on_untouched_quiet_app_is_respected_not_boosted_back()
+    {
+        (LevelingEngine engine, FakeSource source, LevelerSettings settings) = Make();
+        // App sits above target so the engine has settled it once, then the user
+        // deliberately drops it very low ("I want this app quiet").
+        var app = new FakeSession("a", "spotify", rawPeak: 0.5f);
+        source.Sessions.Add(app);
+        RunTicks(engine, 150);
+
+        app.Volume = 0.10f; // user's explicit wish: much quieter than target
+        RunTicks(engine, 150);
+
+        Assert.Equal(0.10f, app.Volume, 3); // engine must NOT steer it back up
+    }
+
+    [Fact]
+    public void Pinned_session_restore_uses_the_users_chosen_volume()
+    {
+        (LevelingEngine engine, FakeSource source, _) = Make();
+        var loud = new FakeSession("a", "video", rawPeak: 0.9f) { Volume = 1.0f };
+        source.Sessions.Add(loud);
+        RunTicks(engine, 150);
+
+        loud.Volume = 0.6f; // user override while leveling is active
+        RunTicks(engine, 20);
+
+        engine.RestoreOriginalVolumes();
+        // Restoring to the pre-engine 1.0 would undo an explicit user action —
+        // the user's own 0.6 must be the restore point.
+        Assert.Equal(0.6f, loud.Volume, 3);
+    }
+
+    [Fact]
+    public void Pin_is_cleared_when_leveling_restarts()
+    {
+        (LevelingEngine engine, FakeSource source, LevelerSettings settings) = Make();
+        var loud = new FakeSession("a", "video", rawPeak: 0.9f);
+        source.Sessions.Add(loud);
+        RunTicks(engine, 50);
+        loud.Volume = 0.9f; // pin it
+        RunTicks(engine, 10);
+        Assert.True(engine.LastStates.Single().Pinned);
+
+        // Toggle off (restore) and back on: pins reset, leveling resumes.
+        engine.RestoreOriginalVolumes();
+        RunTicks(engine, 200);
+
+        Assert.False(engine.LastStates.Single().Pinned);
+        Assert.True(loud.Heard <= settings.TargetLevel * 1.6f, $"should level again, heard {loud.Heard}");
+    }
+
+    [Fact]
+    public void States_report_correcting_and_steady_phases()
+    {
+        (LevelingEngine engine, FakeSource source, LevelerSettings settings) = Make();
+        var loud = new FakeSession("a", "video", rawPeak: 0.9f);
+        source.Sessions.Add(loud);
+
+        engine.Tick();
+        Assert.True(engine.LastStates.Single().Correcting, "far from target: must be correcting");
+
+        RunTicks(engine, 200);
+        SessionState settled = engine.LastStates.Single();
+        Assert.False(settled.Correcting, "settled at target: correction over");
+        Assert.False(settled.Pinned);
     }
 }
