@@ -14,6 +14,7 @@
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
       <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
       <RowDefinition Height="*"/>
       <RowDefinition Height="Auto"/>
     </Grid.RowDefinitions>
@@ -43,8 +44,34 @@
       </ui:TitleBar.Header>
     </ui:TitleBar>
 
+    <!-- Update banner (notify-only: links to the release page, never self-replaces) -->
+    <Border Grid.Row="1" Margin="20,6,20,0" CornerRadius="10" Padding="14,10"
+            Background="{DynamicResource ControlFillColorDefaultBrush}"
+            BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+            Visibility="{Binding UpdateBannerVisible, Converter={StaticResource BoolToVis}}">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <ui:SymbolIcon Symbol="ArrowDownload24" VerticalAlignment="Center" Margin="0,0,10,0"
+                       Foreground="{StaticResource Brush.Accent}"/>
+        <TextBlock Grid.Column="1" VerticalAlignment="Center" TextWrapping="Wrap" FontSize="12.5"
+                   Text="{Binding UpdateText}"/>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+          <ui:Button Content="Download" Appearance="Primary" Margin="8,0,6,0" Padding="10,6"
+                     Click="OnUpdateDownload"/>
+          <ui:Button Content="Not now" Appearance="Transparent" Margin="0,0,6,0" Padding="8,6"
+                     Click="OnUpdateDismiss"/>
+          <ui:Button Content="Don't check again" Appearance="Transparent" FontSize="11.5" Padding="8,6"
+                     Click="OnUpdateStop"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
     <!-- Big on/off + status -->
-    <Border Grid.Row="1" Margin="20,6,20,0" CornerRadius="10" Padding="18,14"
+    <Border Grid.Row="2" Margin="20,6,20,0" CornerRadius="10" Padding="18,14"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
       <Grid>
@@ -63,7 +90,7 @@
     </Border>
 
     <!-- Target + modes + startup -->
-    <Border Grid.Row="2" Margin="20,10,20,0" CornerRadius="10" Padding="18,14"
+    <Border Grid.Row="3" Margin="20,10,20,0" CornerRadius="10" Padding="18,14"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
       <StackPanel>
@@ -102,7 +129,7 @@
     </Border>
 
     <!-- Live mixer -->
-    <Border Grid.Row="3" Margin="20,10,20,0" CornerRadius="10" Padding="4,8"
+    <Border Grid.Row="4" Margin="20,10,20,0" CornerRadius="10" Padding="4,8"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
       <Grid>
@@ -157,7 +184,7 @@
     </Border>
 
     <!-- Per-app rules -->
-    <Border Grid.Row="4" Margin="20,10,20,16" CornerRadius="10" Padding="14,10"
+    <Border Grid.Row="5" Margin="20,10,20,16" CornerRadius="10" Padding="14,10"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
       <Grid>

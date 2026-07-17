@@ -2,6 +2,22 @@
 
 All notable changes to OneVolume are documented here.
 
+## 1.1.1 — 2026-07-17
+
+### Added
+- **Notify-only update check** (same model as BitBroom Rescue): one opt-out HTTPS call
+  to the GitHub releases API at startup. If a newer version exists, a banner offers
+  **Download** (opens the release page), **Not now**, and **Don't check again**
+  (persistent opt-out). OneVolume is a portable exe and deliberately never downloads or
+  replaces itself — silent self-swaps would also re-trigger SmartScreen every release.
+- README updated honestly: the app previously claimed "zero network code"; the update
+  check is now the one documented network call, and how to turn it off is stated.
+
+### Verified
+- Banner flow exercised end-to-end against the live GitHub API using the
+  `OV_TEST_CURRENT_VERSION` override (banner shown for 0.9.0, absent when current),
+  screenshots captured through the real UI.
+
 ## 1.1.0 — 2026-07-17
 
 OneVolume grows from "just the auto-leveler" into a full per-app volume control center.

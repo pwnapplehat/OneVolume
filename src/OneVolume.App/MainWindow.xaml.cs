@@ -75,6 +75,12 @@ public partial class MainWindow : FluentWindow
         }
     }
 
+    private void OnUpdateDownload(object sender, RoutedEventArgs e) => _viewModel.OpenReleasePage();
+
+    private void OnUpdateDismiss(object sender, RoutedEventArgs e) => _viewModel.DismissUpdate();
+
+    private void OnUpdateStop(object sender, RoutedEventArgs e) => _viewModel.StopUpdateChecks();
+
     private void OnTrayExit(object sender, RoutedEventArgs e)
     {
         _reallyExit = true;

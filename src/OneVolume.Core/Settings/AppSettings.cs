@@ -38,6 +38,12 @@ public sealed class AppSettings
     /// </summary>
     public bool StartMinimized { get; set; }
 
+    /// <summary>
+    /// When true (default), one notify-only check for a newer release runs at startup.
+    /// OneVolume never downloads or replaces itself — the banner links to the release page.
+    /// </summary>
+    public bool UpdateCheckEnabled { get; set; } = true;
+
     private static readonly string Dir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "OneVolume");
 

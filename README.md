@@ -54,6 +54,8 @@ target loudness that you choose:
   alive is the automatic leveling and applying rules to newly launched apps.
 - **Night mode** — one switch drops the target and tightens the range for late-night
   listening.
+- **Update notifications, not self-updates** — an optional startup check tells you when
+  a newer release exists and links to it; the portable exe never replaces itself.
 - **Leaves no trace** — every session volume OneVolume adjusted is restored to exactly
   what you had the moment you pause it or exit. Originals are also journaled to disk the
   moment leveling touches an app, so even a force-kill or power loss can't make an
@@ -72,7 +74,10 @@ adjusts that session's volume smoothly at 20 Hz.
 - It never processes or re-routes your audio — bit-perfect playback stays bit-perfect;
   only the per-app volume level moves.
 - It never touches the master volume or your physical volume keys.
-- Zero network code. Settings are a JSON file in `%LocalAppData%\OneVolume`.
+- The only network code is one optional, notify-only update check against the GitHub
+  releases API at startup ("Don't check again" turns it off permanently). OneVolume
+  never downloads or replaces itself — the banner just links to the release page.
+  Settings are a JSON file in `%LocalAppData%\OneVolume`.
 
 Honest limitation: because it works at the per-app session level, it levels *between*
 apps (Chrome vs Spotify vs game). Very fast loud/quiet swings *inside* one continuous

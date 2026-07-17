@@ -202,6 +202,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly LevelingEngine _engine;
     private readonly DispatcherTimer _timer;
     private string _lastDeviceName = "";
+    private bool _updateBannerVisible;
+    private string _updateText = "";
+    private string _updateUrl = "";
 
     public MainViewModel()
     {
@@ -228,6 +231,66 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             _timer.Start();
         }
+
+        // Notify-only: one opt-out check for a newer release. Fire-and-forget; the await
+        // resumes on the UI thread (we're constructed on it) and CheckAsync never throws.
+        if (_appSettings.UpdateCheckEnabled)
+        {
+            _ = CheckForUpdatesAsync();
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        Services.UpdateInfo? info = await Services.UpdateService.CheckAsync();
+        if (info is null)
+        {
+            return;
+        }
+
+        _updateUrl = info.ReleasePageUrl;
+        UpdateText = $"OneVolume {info.Version.ToString(3)} is available — you're running " +
+                     $"{Services.UpdateService.CurrentVersion.ToString(3)}. It's a portable download.";
+        UpdateBannerVisible = true;
+    }
+
+    public bool UpdateBannerVisible
+    {
+        get => _updateBannerVisible;
+        private set { _updateBannerVisible = value; OnChanged(); }
+    }
+
+    public string UpdateText
+    {
+        get => _updateText;
+        private set { _updateText = value; OnChanged(); }
+    }
+
+    public void OpenReleasePage()
+    {
+        if (!string.IsNullOrEmpty(_updateUrl))
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(
+                    new System.Diagnostics.ProcessStartInfo(_updateUrl) { UseShellExecute = true });
+            }
+            catch
+            {
+                // If the shell can't open a browser, there's nothing useful to do.
+            }
+        }
+
+        UpdateBannerVisible = false;
+    }
+
+    public void DismissUpdate() => UpdateBannerVisible = false;
+
+    public void StopUpdateChecks()
+    {
+        _appSettings.UpdateCheckEnabled = false;
+        Save();
+        UpdateBannerVisible = false;
     }
 
     public ObservableCollection<SessionRow> Sessions { get; } = [];
