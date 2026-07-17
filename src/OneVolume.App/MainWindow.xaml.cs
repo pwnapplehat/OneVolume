@@ -58,6 +58,23 @@ public partial class MainWindow : FluentWindow
     private void OnTrayToggle(object sender, RoutedEventArgs e)
         => _viewModel.LevelingEnabled = !_viewModel.LevelingEnabled;
 
+    private void OnAddRuleApp(object sender, RoutedEventArgs e)
+    {
+        var picker = new AppPickerWindow(_viewModel.GetPickerApps()) { Owner = this };
+        if (picker.ShowDialog() == true && picker.Selected is { } app)
+        {
+            _viewModel.AddRule(app.ProcessName);
+        }
+    }
+
+    private void OnRemoveRule(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.DataContext is ViewModels.RuleRow row)
+        {
+            _viewModel.RemoveRule(row);
+        }
+    }
+
     private void OnTrayExit(object sender, RoutedEventArgs e)
     {
         _reallyExit = true;

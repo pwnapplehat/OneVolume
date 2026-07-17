@@ -37,7 +37,7 @@ public class ProcessNamesTests
 public class AppSettingsTests
 {
     [Fact]
-    public void ApplyTo_clamps_target_and_copies_exclusions()
+    public void ApplyTo_clamps_target_and_migrates_exclusions_into_rules()
     {
         var app = new AppSettings
         {
@@ -51,8 +51,8 @@ public class AppSettingsTests
 
         Assert.Equal(0.6f, leveler.TargetLevel, 3); // clamped to slider range
         Assert.True(leveler.NightMode);
-        Assert.True(leveler.ExcludedProcesses.Contains("GAME")); // case-insensitive set
-        Assert.True(leveler.ExcludedProcesses.Contains("daw"));
+        Assert.Equal(RuleKind.Exclude, leveler.ResolveRule("GAME").Kind); // case-insensitive
+        Assert.Equal(RuleKind.Exclude, leveler.ResolveRule("daw").Kind);
     }
 
     [Fact]

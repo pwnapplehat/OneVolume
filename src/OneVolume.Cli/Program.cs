@@ -27,6 +27,7 @@ return args.FirstOrDefault()?.ToLowerInvariant() switch
         int.Parse(args[1], CultureInfo.InvariantCulture),
         float.Parse(args[2], CultureInfo.InvariantCulture)),
     "e2e" => RunE2E(args.Length > 1 ? int.Parse(args[1]) : 12),
+    "e2e-rules" => RunRulesE2E(),
     _ => Help(),
 };
 
@@ -165,6 +166,70 @@ static int RunE2E(int seconds)
     Console.WriteLine(pass ? "\nE2E PASS: real-hardware leveling + exact restore verified."
         : restored ? "\nE2E FAIL: convergence outside 4 dB."
         : "\nE2E FAIL: volumes were not restored exactly.");
+    return pass ? 0 : 2;
+}
+
+static int RunRulesE2E()
+{
+    string exe = Environment.ProcessPath!;
+    using Process tone = Process.Start(new ProcessStartInfo(exe, "tone 440 0.8 30") { UseShellExecute = false })!;
+    Console.WriteLine($"spawned tone pid={tone.Id}");
+
+    using var raw = new WasapiSessionSource();
+    using var filtered = new PidFilteredSource(raw, [tone.Id]);
+
+    // Fixed rule for the tone process (rule created "for an app that isn't running" —
+    // the engine applies it the moment the session appears).
+    var settings = new LevelerSettings();
+    string processName = Path.GetFileNameWithoutExtension(exe);
+    settings.Rules[processName] = new AppRule(processName, RuleKind.Fixed, 0.30f);
+    var engine = new LevelingEngine(filtered, settings);
+
+    for (int i = 0; i < 60 && filtered.GetSessions().Count < 1; i++)
+    {
+        Thread.Sleep(250);
+    }
+
+    if (filtered.GetSessions().Count < 1)
+    {
+        Console.Error.WriteLine("RULES E2E FAIL: tone session did not appear");
+        return 1;
+    }
+
+    // Phase 1: fixed rule applies on appearance and holds despite loud content.
+    for (int i = 0; i < 60; i++)
+    {
+        engine.Tick();
+        Thread.Sleep(50);
+    }
+
+    SessionState s1 = engine.LastStates.Single();
+    bool fixedApplied = Math.Abs(s1.Volume - 0.30f) < 0.02f && s1.Pinned;
+    Console.WriteLine($"phase1 fixed-rule: vol={s1.Volume:0.00} pinned={s1.Pinned}  {(fixedApplied ? "OK" : "FAIL")}");
+
+    // Phase 2: the in-app mixer slider (SetSessionVolume) overrides and holds.
+    bool setOk = engine.SetSessionVolume(s1.Id, 0.85f);
+    for (int i = 0; i < 40; i++)
+    {
+        engine.Tick();
+        Thread.Sleep(50);
+    }
+
+    SessionState s2 = engine.LastStates.Single();
+    bool mixerHeld = setOk && Math.Abs(s2.Volume - 0.85f) < 0.02f;
+    Console.WriteLine($"phase2 mixer-set : vol={s2.Volume:0.00}  {(mixerHeld ? "OK" : "FAIL")}");
+
+    // Phase 3: restore puts the session at the mixer value (user's explicit choice).
+    engine.RestoreOriginalVolumes();
+    float finalVol = filtered.GetSessions().Single().Volume;
+    bool restored = Math.Abs(finalVol - 0.85f) < 0.02f;
+    Console.WriteLine($"phase3 restore   : vol={finalVol:0.00}  {(restored ? "OK" : "FAIL")}");
+
+    try { tone.Kill(); } catch { }
+
+    bool pass = fixedApplied && mixerHeld && restored;
+    Console.WriteLine(pass ? "\nRULES E2E PASS: fixed rule + mixer override + restore verified on hardware."
+                           : "\nRULES E2E FAIL");
     return pass ? 0 : 2;
 }
 

@@ -49,6 +49,7 @@ public sealed class LevelingEngine
     private readonly Dictionary<string, float> _lastSetVolume = new();
     private readonly HashSet<string> _pinned = new();
     private readonly HashSet<string> _correcting = new();
+    private readonly HashSet<string> _fixedApplied = new();
 
     public LevelingEngine(IAudioSessionSource source, LevelerSettings settings, VolumeJournal? journal = null)
     {
@@ -128,7 +129,32 @@ public sealed class LevelingEngine
                 _journal?.Record(session.StableId, volume);
             }
 
-            bool excluded = _settings.ExcludedProcesses.Contains(session.ProcessName);
+            AppRule rule = _settings.ResolveRule(session.ProcessName);
+            bool excluded = rule.Kind == RuleKind.Exclude;
+
+            // Fixed rule: set the app to its configured volume once, when the session
+            // first appears, then pin it — the app holds that volume (and a later manual
+            // change by the user wins, exactly like any other pin). The pre-rule volume
+            // was already captured above, but the rule IS the user's declared intent, so
+            // the restore point becomes the fixed value.
+            if (rule.Kind == RuleKind.Fixed && _fixedApplied.Add(session.Id))
+            {
+                float fixedVolume = rule.SafeFixedVolume;
+                if (TrySetVolume(session, fixedVolume))
+                {
+                    volume = fixedVolume;
+                    _pinned.Add(session.Id);
+                    _correcting.Remove(session.Id);
+                    _originalVolume[session.Id] = fixedVolume;
+                    _lastSetVolume[session.Id] = fixedVolume;
+                    _journal?.Record(session.StableId, fixedVolume);
+                }
+                else
+                {
+                    _fixedApplied.Remove(session.Id); // write failed — retry next tick
+                }
+            }
+
             bool pinned = _pinned.Contains(session.Id);
 
             // Smoothed pre-volume loudness estimate.
@@ -229,6 +255,57 @@ public sealed class LevelingEngine
         _correcting.Clear();
         _pinned.Clear();
         _lastSetVolume.Clear();
+        _fixedApplied.Clear();
+    }
+
+    /// <summary>
+    /// Sets one session's volume on the user's behalf (the in-app mixer slider). The
+    /// session is pinned — an explicit user choice always wins over the algorithm — and
+    /// the value becomes the restore point and journal entry, exactly like a change made
+    /// in the Windows volume mixer. Works whether or not the engine is ticking.
+    /// </summary>
+    public bool SetSessionVolume(string sessionId, float volume)
+    {
+        float clamped = Math.Clamp(volume, 0f, 1f);
+        foreach (IAudioSession session in _source.GetSessions())
+        {
+            if (session.Id != sessionId || !session.IsAlive)
+            {
+                continue;
+            }
+
+            if (!TrySetVolume(session, clamped))
+            {
+                return false;
+            }
+
+            _pinned.Add(sessionId);
+            _correcting.Remove(sessionId);
+            _originalVolume[sessionId] = clamped;
+            _lastSetVolume[sessionId] = clamped;
+            _journal?.Record(session.StableId, clamped);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Forgets pins and fixed-rule application for every live session of a process —
+    /// called when the user edits that app's rule so the new rule takes effect
+    /// immediately instead of after the app restarts.
+    /// </summary>
+    public void UnpinProcess(string processName)
+    {
+        foreach (SessionState state in LastStates)
+        {
+            if (string.Equals(state.ProcessName, processName, StringComparison.OrdinalIgnoreCase))
+            {
+                _pinned.Remove(state.Id);
+                _fixedApplied.Remove(state.Id);
+                _correcting.Remove(state.Id);
+            }
+        }
     }
 
     /// <summary>
@@ -319,5 +396,6 @@ public sealed class LevelingEngine
 
         _correcting.RemoveWhere(k => !alive.Contains(k));
         _pinned.RemoveWhere(k => !alive.Contains(k));
+        _fixedApplied.RemoveWhere(k => !alive.Contains(k));
     }
 }

@@ -2,6 +2,41 @@
 
 All notable changes to OneVolume are documented here.
 
+## 1.1.0 — 2026-07-17
+
+OneVolume grows from "just the auto-leveler" into a full per-app volume control center.
+
+### Added
+- **Live per-app mixer.** Every playing app now has a real volume slider in the window
+  (with a thin live loudness meter under it). Dragging it sets that app's volume and
+  pins the session — your choice always beats the algorithm, same as using the Windows
+  mixer.
+- **Per-app rules — including apps that aren't running.** New "App rules" panel with an
+  installed-apps browser (Start Menu scan; you can also just type a process name):
+  - *Level automatically* — the default behavior;
+  - *Fixed volume N%* — applied the instant the app's audio session appears, then left
+    in your control (a later manual change wins for that session; pausing OneVolume
+    restores the fixed value, not the pre-rule one — the rule is your declared intent);
+  - *Never touch* — replaces the old comma-separated exclusion box (existing exclusion
+    lists migrate automatically).
+  Rule edits take effect immediately on running apps, not just after an app restart.
+- Honest persistence note: Windows itself remembers per-app volumes, so a fixed volume
+  usually sticks even when OneVolume isn't running; the tray app is needed for
+  automatic leveling and for applying rules to newly launched apps.
+
+### Changed
+- Session status labels now include `fixed` for rule-held apps.
+- Default window is slightly taller to fit the mixer and rules panels.
+
+### Verified
+- 39 unit tests (new: fixed-rule apply/hold/restore semantics, manual-change override,
+  exclusion via rules, legacy migration, immediate rule re-application, mixer entry
+  point with and without the engine ticking, persisted-model round-trip, clamping).
+- New real-hardware E2E (`e2e-rules`): fixed rule applies on session appearance
+  (0.30 exact), in-app mixer override holds (0.85), restore keeps the user's value.
+- UIA smoke test: the installed-apps picker enumerates real apps (74 on the dev
+  machine) through the actual UI.
+
 ## 1.0.2 — 2026-07-17
 
 ### Fixed

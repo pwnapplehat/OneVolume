@@ -3,8 +3,8 @@
                  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
                  xmlns:ui="http://schemas.lepo.co/wpfui/2022/xaml"
                  xmlns:tb="http://www.hardcodet.net/taskbar"
-                 Title="OneVolume" Width="560" Height="640"
-                 MinWidth="480" MinHeight="520"
+                 Title="OneVolume" Width="600" Height="760"
+                 MinWidth="520" MinHeight="600"
                  WindowStartupLocation="CenterScreen"
                  WindowCornerPreference="Round"
                  ExtendsContentIntoTitleBar="True" WindowBackdropType="Mica"
@@ -53,7 +53,7 @@
           <ColumnDefinition Width="Auto"/>
         </Grid.ColumnDefinitions>
         <StackPanel>
-          <TextBlock Text="Automatic leveling" FontSize="15" FontWeight="SemiBold"/>
+          <TextBlock Text="OneVolume" FontSize="15" FontWeight="SemiBold"/>
           <TextBlock Text="{Binding StatusText}" FontSize="12.5" Margin="0,3,0,0"
                      Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"/>
         </StackPanel>
@@ -62,7 +62,7 @@
       </Grid>
     </Border>
 
-    <!-- Target + modes -->
+    <!-- Target + modes + startup -->
     <Border Grid.Row="2" Margin="20,10,20,0" CornerRadius="10" Padding="18,14"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
@@ -95,10 +95,13 @@
           <ui:ToggleSwitch Grid.Column="1" VerticalAlignment="Center"
                            IsChecked="{Binding NightMode, Mode=TwoWay}"/>
         </Grid>
+
+        <CheckBox Margin="0,10,0,0" Content="Start with Windows (minimized to tray)"
+                  IsChecked="{Binding StartWithWindows, Mode=TwoWay}"/>
       </StackPanel>
     </Border>
 
-    <!-- Live sessions -->
+    <!-- Live mixer -->
     <Border Grid.Row="3" Margin="20,10,20,0" CornerRadius="10" Padding="4,8"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
@@ -107,33 +110,45 @@
           <RowDefinition Height="Auto"/>
           <RowDefinition Height="*"/>
         </Grid.RowDefinitions>
-        <TextBlock Margin="14,4,14,8" FontWeight="SemiBold"
+        <TextBlock Margin="14,4,14,6" FontWeight="SemiBold"
                    Text="{Binding DeviceName, StringFormat=Playing now — {0}}"/>
         <ListBox Grid.Row="1" ItemsSource="{Binding Sessions}" BorderThickness="0"
                  Background="Transparent" HorizontalContentAlignment="Stretch"
                  ScrollViewer.HorizontalScrollBarVisibility="Disabled">
           <ListBox.ItemTemplate>
             <DataTemplate>
-              <Grid Margin="10,6">
+              <Grid Margin="10,4">
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto"/>
+                  <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                  <ColumnDefinition Width="170"/>
+                  <ColumnDefinition Width="150"/>
                   <ColumnDefinition Width="*"/>
-                  <ColumnDefinition Width="60"/>
-                  <ColumnDefinition Width="70"/>
+                  <ColumnDefinition Width="52"/>
+                  <ColumnDefinition Width="62"/>
                 </Grid.ColumnDefinitions>
+
                 <TextBlock Text="{Binding ProcessName}" VerticalAlignment="Center"
                            TextTrimming="CharacterEllipsis"/>
-                <Border Grid.Column="1" Height="8" CornerRadius="4" VerticalAlignment="Center"
-                        Background="{DynamicResource ControlStrokeColorDefaultBrush}">
-                  <Border HorizontalAlignment="Left" CornerRadius="4"
-                          Background="{StaticResource Brush.Accent}"
-                          Width="{Binding HeardPercent}"/>
-                </Border>
+                <!-- Real mixer slider: drag to set this app's volume (pins it). -->
+                <Slider Grid.Column="1" Minimum="0" Maximum="100" Margin="0,0,6,0"
+                        VerticalAlignment="Center"
+                        Value="{Binding VolumePercent, Mode=TwoWay}"/>
                 <TextBlock Grid.Column="2" Text="{Binding VolumeText}" VerticalAlignment="Center"
-                           HorizontalAlignment="Right" Foreground="{StaticResource Brush.Muted}"/>
+                           HorizontalAlignment="Right" Foreground="{DynamicResource TextFillColorPrimaryBrush}"/>
                 <TextBlock Grid.Column="3" Text="{Binding Status}" VerticalAlignment="Center"
                            HorizontalAlignment="Right" FontSize="11.5"
                            Foreground="{StaticResource Brush.Muted}"/>
+
+                <!-- Thin live loudness meter under the slider -->
+                <Border Grid.Row="1" Grid.Column="1" Height="3" CornerRadius="1.5" Margin="0,2,6,0"
+                        HorizontalAlignment="Stretch"
+                        Background="{DynamicResource ControlStrokeColorDefaultBrush}">
+                  <Border HorizontalAlignment="Left" CornerRadius="1.5"
+                          Background="{StaticResource Brush.Accent}"
+                          Width="{Binding HeardPercent}"/>
+                </Border>
               </Grid>
             </DataTemplate>
           </ListBox.ItemTemplate>
@@ -141,17 +156,70 @@
       </Grid>
     </Border>
 
-    <!-- Footer: exclusions + startup -->
-    <Border Grid.Row="4" Margin="20,10,20,16" CornerRadius="10" Padding="18,12"
+    <!-- Per-app rules -->
+    <Border Grid.Row="4" Margin="20,10,20,16" CornerRadius="10" Padding="14,10"
             Background="{DynamicResource ControlFillColorDefaultBrush}"
             BorderThickness="1" BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}">
-      <StackPanel>
-        <TextBlock Text="Never touch these apps (comma-separated)" FontWeight="SemiBold" FontSize="12.5"/>
-        <ui:TextBox Margin="0,6,0,0" PlaceholderText="e.g. cs2, vlc, ableton"
-                    Text="{Binding ExcludedText, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"/>
-        <CheckBox Margin="0,10,0,0" Content="Start with Windows (minimized to tray)"
-                  IsChecked="{Binding StartWithWindows, Mode=TwoWay}"/>
-      </StackPanel>
+      <Grid>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="*"/>
+            <ColumnDefinition Width="Auto"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel>
+            <TextBlock Text="App rules" FontWeight="SemiBold"/>
+            <TextBlock FontSize="12" Foreground="{StaticResource Brush.Muted}" TextWrapping="Wrap"
+                       Text="Per-app behavior — applies the moment the app plays audio, even if it isn't running yet."/>
+          </StackPanel>
+          <ui:Button Grid.Column="1" Content="Add app…" Appearance="Secondary"
+                     VerticalAlignment="Center" Click="OnAddRuleApp"/>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" MaxHeight="170" Margin="0,8,0,0"
+                      VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock Text="No rules yet — every app is leveled automatically."
+                       FontSize="12" Foreground="{StaticResource Brush.Muted}" Margin="2,4,0,4"
+                       Visibility="{Binding HasNoRules, Converter={StaticResource BoolToVis}}"/>
+            <ItemsControl ItemsSource="{Binding Rules}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Grid Margin="0,3">
+                    <Grid.ColumnDefinitions>
+                      <ColumnDefinition Width="140"/>
+                      <ColumnDefinition Width="170"/>
+                      <ColumnDefinition Width="*"/>
+                      <ColumnDefinition Width="46"/>
+                      <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding ProcessName}" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" FontWeight="SemiBold"/>
+                    <ComboBox Grid.Column="1" Margin="6,0,0,0" VerticalAlignment="Center"
+                              ItemsSource="{Binding Options}"
+                              SelectedItem="{Binding KindOption, Mode=TwoWay}"
+                              FontSize="12"/>
+                    <Slider Grid.Column="2" Minimum="0" Maximum="100" Margin="10,0,6,0"
+                            VerticalAlignment="Center"
+                            Value="{Binding FixedPercent, Mode=TwoWay}"
+                            Visibility="{Binding IsFixed, Converter={StaticResource BoolToVis}}"/>
+                    <TextBlock Grid.Column="3" Text="{Binding FixedPercentText}" VerticalAlignment="Center"
+                               HorizontalAlignment="Right"
+                               Visibility="{Binding IsFixed, Converter={StaticResource BoolToVis}}"/>
+                    <ui:Button Grid.Column="4" Margin="8,0,0,0" Padding="6,4" Appearance="Transparent"
+                               ToolTip="Remove rule" Click="OnRemoveRule">
+                      <ui:SymbolIcon Symbol="Dismiss20"/>
+                    </ui:Button>
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
     </Border>
   </Grid>
 </ui:FluentWindow>

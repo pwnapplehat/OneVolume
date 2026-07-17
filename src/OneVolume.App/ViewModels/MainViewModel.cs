@@ -9,12 +9,20 @@ using OneVolume.Core.Settings;
 
 namespace OneVolume.App.ViewModels;
 
-/// <summary>Row in the live sessions list (one per audio session, keyed by session id).</summary>
+/// <summary>
+/// Row in the live sessions list (one per audio session, keyed by session id).
+/// The slider is a real mixer control: dragging it sets the app's volume through the
+/// engine (which pins the session — the user's choice wins over the algorithm).
+/// </summary>
 public sealed class SessionRow : INotifyPropertyChanged
 {
+    private readonly Action<SessionRow, float> _onUserVolume;
     private float _heard;
     private float _volume;
     private string _status = "";
+    private bool _updatingFromEngine;
+
+    public SessionRow(Action<SessionRow, float> onUserVolume) => _onUserVolume = onUserVolume;
 
     public required string SessionId { get; init; }
 
@@ -25,24 +33,150 @@ public sealed class SessionRow : INotifyPropertyChanged
     public float Heard
     {
         get => _heard;
-        set { _heard = value; OnChanged(); OnChanged(nameof(HeardPercent)); }
-    }
-
-    public float Volume
-    {
-        get => _volume;
-        set { _volume = value; OnChanged(); OnChanged(nameof(VolumeText)); }
+        private set { _heard = value; OnChanged(); OnChanged(nameof(HeardPercent)); }
     }
 
     public string Status
     {
         get => _status;
-        set { _status = value; OnChanged(); }
+        private set
+        {
+            if (_status != value)
+            {
+                _status = value;
+                OnChanged();
+            }
+        }
+    }
+
+    /// <summary>Slider binding, 0..100. Setter only fires the mixer action for user edits.</summary>
+    public double VolumePercent
+    {
+        get => _volume * 100;
+        set
+        {
+            float clamped = (float)Math.Clamp(value, 0, 100) / 100f;
+            if (Math.Abs(clamped - _volume) < 0.004f)
+            {
+                return;
+            }
+
+            _volume = clamped;
+            OnChanged();
+            OnChanged(nameof(VolumeText));
+            if (!_updatingFromEngine)
+            {
+                _onUserVolume(this, clamped);
+            }
+        }
     }
 
     public double HeardPercent => Math.Min(100, Heard * 260);
 
-    public string VolumeText => $"{Volume:P0}";
+    public string VolumeText => $"{_volume:P0}";
+
+    /// <summary>Engine → UI mirror; never triggers the mixer action.</summary>
+    public void UpdateFromEngine(float volume, float heard, string status)
+    {
+        _updatingFromEngine = true;
+        try
+        {
+            VolumePercent = volume * 100;
+            Heard = heard;
+            Status = status;
+        }
+        finally
+        {
+            _updatingFromEngine = false;
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnChanged([CallerMemberName] string? name = null)
+        => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>One per-app rule row in the rules editor.</summary>
+public sealed class RuleRow : INotifyPropertyChanged
+{
+    public static readonly string[] KindOptions = ["Level automatically", "Fixed volume", "Never touch"];
+
+    private readonly Action<RuleRow> _onEdited;
+    private string _kindOption;
+    private double _fixedPercent;
+    private bool _initializing = true;
+
+    public RuleRow(AppRule rule, Action<RuleRow> onEdited)
+    {
+        _onEdited = onEdited;
+        ProcessName = rule.ProcessName;
+        _kindOption = rule.Kind switch
+        {
+            RuleKind.Fixed => KindOptions[1],
+            RuleKind.Exclude => KindOptions[2],
+            _ => KindOptions[0],
+        };
+        _fixedPercent = Math.Round(rule.SafeFixedVolume * 100);
+        _initializing = false;
+    }
+
+    public string ProcessName { get; }
+
+    public string[] Options => KindOptions;
+
+    public string KindOption
+    {
+        get => _kindOption;
+        set
+        {
+            if (_kindOption == value)
+            {
+                return;
+            }
+
+            _kindOption = value;
+            OnChanged();
+            OnChanged(nameof(IsFixed));
+            NotifyEdited();
+        }
+    }
+
+    public bool IsFixed => _kindOption == KindOptions[1];
+
+    public double FixedPercent
+    {
+        get => _fixedPercent;
+        set
+        {
+            double clamped = Math.Round(Math.Clamp(value, 0, 100));
+            if (Math.Abs(clamped - _fixedPercent) < 0.5)
+            {
+                return;
+            }
+
+            _fixedPercent = clamped;
+            OnChanged();
+            OnChanged(nameof(FixedPercentText));
+            NotifyEdited();
+        }
+    }
+
+    public string FixedPercentText => $"{_fixedPercent:0}%";
+
+    public RuleKind Kind => _kindOption == KindOptions[1] ? RuleKind.Fixed
+        : _kindOption == KindOptions[2] ? RuleKind.Exclude
+        : RuleKind.Level;
+
+    public AppRule ToRule() => new(ProcessName, Kind, (float)(_fixedPercent / 100.0));
+
+    private void NotifyEdited()
+    {
+        if (!_initializing)
+        {
+            _onEdited(this);
+        }
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -52,8 +186,11 @@ public sealed class SessionRow : INotifyPropertyChanged
 
 /// <summary>
 /// Hosts the leveling engine on a 20 Hz dispatcher timer and exposes everything the
-/// window binds to. Turning leveling off (or exiting) restores every session volume
-/// the engine ever touched — OneVolume must leave no trace when disabled.
+/// window binds to: the master toggle, target dial, live per-app mixer, and the per-app
+/// rules (fixed volume / never touch / level), which apply the moment an app's audio
+/// session appears — including apps that weren't running when the rule was created.
+/// Turning leveling off (or exiting) restores every session volume the engine ever
+/// touched — OneVolume must leave no trace when disabled.
 /// </summary>
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
@@ -76,6 +213,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         // before doing anything else — an attenuated volume must never become permanent.
         _engine.RecoverOrphanedVolumes();
 
+        foreach (AppRule rule in _levelerSettings.Rules.Values
+                     .OrderBy(r => r.ProcessName, StringComparer.OrdinalIgnoreCase))
+        {
+            Rules.Add(new RuleRow(rule, OnRuleEdited));
+        }
+
         _timer = new DispatcherTimer(DispatcherPriority.Background)
         {
             Interval = TimeSpan.FromMilliseconds(50),
@@ -88,6 +231,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     }
 
     public ObservableCollection<SessionRow> Sessions { get; } = [];
+
+    public ObservableCollection<RuleRow> Rules { get; } = [];
 
     public bool StartMinimizedPreferred => _appSettings.StartMinimized;
 
@@ -166,30 +311,87 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public string ExcludedText
-    {
-        get => string.Join(", ", _levelerSettings.ExcludedProcesses.OrderBy(x => x, StringComparer.OrdinalIgnoreCase));
-        set
-        {
-            _levelerSettings.ExcludedProcesses.Clear();
-            foreach (string name in ProcessNames.Parse(value))
-            {
-                _levelerSettings.ExcludedProcesses.Add(name);
-            }
-
-            _appSettings.ExcludedProcesses = [.. _levelerSettings.ExcludedProcesses];
-            Save();
-            OnChanged();
-        }
-    }
-
     public string DeviceName => _source.DeviceName;
 
     public string StatusText => !LevelingEnabled
         ? "Paused — app volumes restored to your own settings."
         : NightMode
-            ? "Leveling (night mode) — quieter target, tighter range."
-            : "Leveling — loud apps are eased down to your target.";
+            ? "Active (night mode) — quieter target, tighter range."
+            : "Active — leveling, per-app rules, and blast protection.";
+
+    public bool HasNoRules => Rules.Count == 0;
+
+    // ------------------------------------------------------------------ rules
+
+    /// <summary>Adds (or focuses) a rule for a process name; default kind = Fixed 50%.</summary>
+    public void AddRule(string processName, RuleKind kind = RuleKind.Fixed, float fixedVolume = 0.5f)
+    {
+        string name = processName.Trim();
+        if (name.Length == 0)
+        {
+            return;
+        }
+
+        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            name = name[..^4];
+        }
+
+        if (Rules.Any(r => string.Equals(r.ProcessName, name, StringComparison.OrdinalIgnoreCase)))
+        {
+            return; // one rule per app
+        }
+
+        var rule = new AppRule(name, kind, fixedVolume);
+        _levelerSettings.Rules[name] = rule;
+        Rules.Add(new RuleRow(rule, OnRuleEdited));
+        _engine.UnpinProcess(name);
+        PersistRules();
+        OnChanged(nameof(HasNoRules));
+    }
+
+    public void RemoveRule(RuleRow row)
+    {
+        Rules.Remove(row);
+        _levelerSettings.Rules.Remove(row.ProcessName);
+        _engine.UnpinProcess(row.ProcessName); // back to plain leveling right away
+        PersistRules();
+        OnChanged(nameof(HasNoRules));
+    }
+
+    private void OnRuleEdited(RuleRow row)
+    {
+        _levelerSettings.Rules[row.ProcessName] = row.ToRule();
+        _engine.UnpinProcess(row.ProcessName); // re-apply the new rule immediately
+        PersistRules();
+    }
+
+    private void PersistRules()
+    {
+        _appSettings.CaptureRules(_levelerSettings);
+        Save();
+    }
+
+    /// <summary>Apps for the picker: everything installed plus whatever is playing now.</summary>
+    public List<Services.InstalledApp> GetPickerApps()
+    {
+        List<Services.InstalledApp> apps = Services.InstalledApps.Enumerate();
+        var known = new HashSet<string>(apps.Select(a => a.ProcessName), StringComparer.OrdinalIgnoreCase);
+        foreach (SessionRow row in Sessions)
+        {
+            if (known.Add(row.ProcessName))
+            {
+                apps.Add(new Services.InstalledApp(row.ProcessName + " (playing now)", row.ProcessName));
+            }
+        }
+
+        return [.. apps.OrderBy(a => a.DisplayName, StringComparer.OrdinalIgnoreCase)];
+    }
+
+    // ------------------------------------------------------------------ mixer
+
+    private void OnUserVolume(SessionRow row, float volume)
+        => _engine.SetSessionVolume(row.SessionId, volume);
 
     private void TickOnce()
     {
@@ -215,18 +417,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             if (!byId.TryGetValue(s.Id, out SessionRow? row))
             {
-                row = new SessionRow { SessionId = s.Id, ProcessName = s.ProcessName, ProcessId = s.ProcessId };
+                row = new SessionRow(OnUserVolume) { SessionId = s.Id, ProcessName = s.ProcessName, ProcessId = s.ProcessId };
                 byId[s.Id] = row;
                 Sessions.Add(row);
             }
 
-            row.Heard = s.HeardLevel;
-            row.Volume = s.Volume;
-            row.Status = s.Excluded ? "excluded"
+            RuleKind kind = _levelerSettings.ResolveRule(s.ProcessName).Kind;
+            string status = s.Excluded ? "excluded"
+                : s.Pinned && kind == RuleKind.Fixed ? "fixed"
                 : s.Pinned ? "manual"
                 : s.Gated ? "silent"
                 : s.Correcting ? "leveling"
                 : "steady";
+            row.UpdateFromEngine(s.Volume, s.HeardLevel, status);
         }
 
         for (int i = Sessions.Count - 1; i >= 0; i--)

@@ -15,6 +15,7 @@
       <SolidColorBrush x:Key="Brush.AccentDim" Color="#22C55E"/>
       <SolidColorBrush x:Key="Brush.Muted" Color="#8B98A9"/>
       <SolidColorBrush x:Key="Brush.Warn" Color="#FBBF24"/>
+      <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </ResourceDictionary>
   </Application.Resources>
 </Application>

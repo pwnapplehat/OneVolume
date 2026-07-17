@@ -67,8 +67,30 @@ public sealed class LevelerSettings
     /// Process names (case-insensitive, no extension) the engine must never touch —
     /// e.g. games, DAWs, screen readers. Communications apps are governed separately
     /// by Windows' own ducking; users can add them here too.
+    /// Kept for backward compatibility; new code should add an <see cref="AppRule"/>
+    /// with <see cref="RuleKind.Exclude"/> instead. The engine honors both.
     /// </summary>
     public HashSet<string> ExcludedProcesses { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Per-app rules keyed by process name. A rule beats the default behavior:
+    /// Exclude = never touch, Fixed = set to a chosen volume when the app appears,
+    /// Level = explicit default (useful to override nothing, but allowed).
+    /// </summary>
+    public Dictionary<string, AppRule> Rules { get; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The effective rule kind for a process (legacy exclusions honored).</summary>
+    public AppRule ResolveRule(string processName)
+    {
+        if (Rules.TryGetValue(processName, out AppRule? rule))
+        {
+            return rule;
+        }
+
+        return ExcludedProcesses.Contains(processName)
+            ? new AppRule(processName, RuleKind.Exclude)
+            : new AppRule(processName, RuleKind.Level);
+    }
 
     /// <summary>Effective target for the current mode.</summary>
     public float EffectiveTarget => NightMode ? NightTargetLevel : TargetLevel;
