@@ -97,4 +97,35 @@ public sealed class LevelerSettings
 
     /// <summary>Effective deadband for the current mode.</summary>
     public double EffectiveDeadbandDb => NightMode ? NightDeadbandDb : DeadbandDb;
+
+    // ---------------------------------------------------------------- LUFS path
+
+    /// <summary>
+    /// Steer using true perceived loudness (BS.1770 momentary LUFS from per-process
+    /// capture) whenever a loudness provider can measure the app; peak metering remains
+    /// the always-available fallback (and the blast clamp stays peak-based — it must
+    /// react faster than any 400 ms loudness window can).
+    /// </summary>
+    public bool UseLufs { get; set; } = true;
+
+    /// <summary>
+    /// Typical content peaks this many dB above its average loudness (crest factor).
+    /// Mapping the user's peak-domain target to LUFS subtracts this allowance so real
+    /// music/video lands at a comparable perceived level to what the peak path produced.
+    /// </summary>
+    public double CrestAllowanceDb { get; set; } = 6.0;
+
+    /// <summary>
+    /// The LUFS the current target maps to: a sine peaking at the target level measures
+    /// ≈ 20·log10(t) LUFS (the standard's −0.691 offset cancels the K-filter gain at
+    /// 997 Hz); real content sits ~crest allowance below its peaks. Night mode flows
+    /// through automatically via EffectiveTarget.
+    /// </summary>
+    public double TargetLufs => 20.0 * Math.Log10(Math.Max(EffectiveTarget, 1e-4)) - CrestAllowanceDb;
+
+    /// <summary>Momentary loudness below this is silence for the LUFS path.</summary>
+    public double LufsGate { get; set; } = -45.0;
+
+    /// <summary>Max volume change per tick on the LUFS path, in dB (0.5 dB @ 20 Hz = 10 dB/s).</summary>
+    public double MaxStepDbLufs { get; set; } = 0.5;
 }

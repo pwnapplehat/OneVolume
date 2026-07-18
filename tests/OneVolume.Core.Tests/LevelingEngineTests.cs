@@ -173,7 +173,7 @@ public class LevelingEngineTests
     }
 
     [Fact]
-    public void Dead_sessions_are_pruned_and_do_not_leak_state()
+    public void Dead_sessions_are_pruned_after_grace_and_do_not_leak_state()
     {
         (LevelingEngine engine, FakeSource source, _) = Make();
         var app = new FakeSession("a", "video", rawPeak: 0.9f);
@@ -181,17 +181,39 @@ public class LevelingEngineTests
         RunTicks(engine, 50);
 
         app.IsAlive = false;
-        engine.Tick();
+        RunTicks(engine, LevelingEngine.PruneGraceTicks + 1); // grace must elapse first
         Assert.Empty(engine.LastStates);
 
-        // Same id re-appears (session ids can be reused after an app restarts): the engine
-        // must treat it as brand new — including capturing its fresh original volume.
+        // A fresh session appearing later (real WASAPI never reuses instance ids while
+        // tracked; the grace period guards transient enumeration misses) must be treated
+        // as brand new — including capturing its fresh original volume.
         var reborn = new FakeSession("a", "video", rawPeak: 0.9f) { Volume = 0.5f };
         source.Sessions.Clear();
         source.Sessions.Add(reborn);
         RunTicks(engine, 5);
         engine.RestoreOriginalVolumes();
         Assert.Equal(0.5f, reborn.Volume, 2);
+    }
+
+    [Fact]
+    public void Transient_enumeration_miss_does_not_corrupt_the_restore_point()
+    {
+        (LevelingEngine engine, FakeSource source, _) = Make();
+        var app = new FakeSession("a", "video", rawPeak: 0.9f) { Volume = 0.64f };
+        source.Sessions.Add(app);
+        RunTicks(engine, 100); // engine attenuates; original = 0.64
+        Assert.True(app.Volume < 0.5f);
+
+        // WASAPI briefly misses the live session (COM hiccup), then it's back — with the
+        // attenuated volume Windows still has applied. Without the prune grace period the
+        // engine would forget 0.64 and adopt the attenuated value as "original".
+        app.IsAlive = false;
+        RunTicks(engine, 5);
+        app.IsAlive = true;
+        RunTicks(engine, 5);
+
+        engine.RestoreOriginalVolumes();
+        Assert.Equal(0.64f, app.Volume, 2); // the true original survived the hiccup
     }
 
     [Fact]

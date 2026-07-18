@@ -28,6 +28,7 @@ return args.FirstOrDefault()?.ToLowerInvariant() switch
         float.Parse(args[2], CultureInfo.InvariantCulture)),
     "e2e" => RunE2E(args.Length > 1 ? int.Parse(args[1]) : 12),
     "e2e-rules" => RunRulesE2E(),
+    "e2e-lufs" => RunLufsE2E(),
     _ => Help(),
 };
 
@@ -230,6 +231,74 @@ static int RunRulesE2E()
     bool pass = fixedApplied && mixerHeld && restored;
     Console.WriteLine(pass ? "\nRULES E2E PASS: fixed rule + mixer override + restore verified on hardware."
                            : "\nRULES E2E FAIL");
+    return pass ? 0 : 2;
+}
+
+static int RunLufsE2E()
+{
+    string exe = Environment.ProcessPath!;
+
+    // Same PEAK amplitude, radically different duty cycle would be ideal; two sines at
+    // different amplitudes prove the loudness domain end-to-end: both must converge to
+    // the same LUFS (not the same peak), through real per-process capture.
+    using Process loud = Process.Start(new ProcessStartInfo(exe, "tone 440 0.90 45") { UseShellExecute = false })!;
+    using Process quiet = Process.Start(new ProcessStartInfo(exe, "tone 660 0.30 45") { UseShellExecute = false })!;
+    int[] pids = [loud.Id, quiet.Id];
+    Console.WriteLine($"tones: loud={loud.Id} (0.90)  quiet={quiet.Id} (0.30)");
+
+    using var raw = new WasapiSessionSource();
+    using var filtered = new PidFilteredSource(raw, pids);
+    using var hub = new OneVolume.Core.Loudness.LoudnessMeterHub();
+    var settings = new LevelerSettings();
+    var engine = new LevelingEngine(filtered, settings, null, hub);
+
+    for (int i = 0; i < 60 && filtered.GetSessions().Count < 2; i++)
+    {
+        Thread.Sleep(250);
+    }
+
+    if (filtered.GetSessions().Count < 2)
+    {
+        Console.Error.WriteLine("LUFS E2E FAIL: tone sessions did not appear");
+        return 1;
+    }
+
+    var clock = Stopwatch.StartNew();
+    long nextLog = 0;
+    while (clock.Elapsed.TotalSeconds < 20)
+    {
+        engine.Tick();
+        if (clock.ElapsedMilliseconds >= nextLog)
+        {
+            nextLog += 2500;
+            string row = string.Join("   ", engine.LastStates.Select(s =>
+                $"{(s.ProcessId == loud.Id ? "loud" : "quiet")} vol={s.Volume:0.00} lufs={s.Lufs:0.0} viaLufs={s.UsingLufs}"));
+            Console.WriteLine($"t={clock.Elapsed.TotalSeconds,4:0.0}s  {row}");
+        }
+
+        Thread.Sleep(50);
+    }
+
+    SessionState[] states = engine.LastStates.ToArray();
+    SessionState l = states.First(s => s.ProcessId == loud.Id);
+    SessionState q = states.First(s => s.ProcessId == quiet.Id);
+
+    bool bothViaLufs = l.UsingLufs && q.UsingLufs;
+    double gap = Math.Abs(l.Lufs - q.Lufs);
+    double targetErr = Math.Max(Math.Abs(l.Lufs - settings.TargetLufs), Math.Abs(q.Lufs - settings.TargetLufs));
+
+    Console.WriteLine($"\nvia LUFS: {bothViaLufs}   loudness gap: {gap:0.00} dB   worst distance from target ({settings.TargetLufs:0.0} LUFS): {targetErr:0.00} dB");
+
+    engine.RestoreOriginalVolumes();
+    try { loud.Kill(); } catch { }
+    try { quiet.Kill(); } catch { }
+
+    // Sines have ~zero crest headroom vs the 6 dB allowance for real content, so allow
+    // the deadband plus settle margin around the target.
+    bool pass = bothViaLufs && gap < 1.5 && targetErr < settings.EffectiveDeadbandDb + 1.0;
+    Console.WriteLine(pass
+        ? "\nLUFS E2E PASS: both apps converged to the same perceived loudness via per-process capture."
+        : "\nLUFS E2E FAIL");
     return pass ? 0 : 2;
 }
 

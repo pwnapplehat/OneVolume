@@ -1,4 +1,5 @@
 using OneVolume.Core.Audio;
+using OneVolume.Core.Loudness;
 
 namespace OneVolume.Core.Leveling;
 
@@ -14,7 +15,9 @@ public sealed record SessionState(
     bool Excluded,
     bool Gated,
     bool Pinned,
-    bool Correcting);
+    bool Correcting,
+    double Lufs = double.NaN,
+    bool UsingLufs = false);
 
 /// <summary>
 /// The heart of OneVolume: a deterministic, side-effect-free-except-volume control loop.
@@ -44,18 +47,35 @@ public sealed class LevelingEngine
     private readonly IAudioSessionSource _source;
     private readonly LevelerSettings _settings;
     private readonly VolumeJournal? _journal;
+    private readonly ILoudnessProvider? _loudness;
     private readonly Dictionary<string, float> _smoothed = new();
     private readonly Dictionary<string, float> _originalVolume = new();
     private readonly Dictionary<string, float> _lastSetVolume = new();
     private readonly HashSet<string> _pinned = new();
     private readonly HashSet<string> _correcting = new();
     private readonly HashSet<string> _fixedApplied = new();
+    private readonly HashSet<int> _lufsEligible = new();
+    private readonly Dictionary<string, int> _missedTicks = new();
 
-    public LevelingEngine(IAudioSessionSource source, LevelerSettings settings, VolumeJournal? journal = null)
+    /// <summary>
+    /// Ticks a session may be absent from enumeration before its state is forgotten.
+    /// WASAPI enumeration can transiently miss a live session (COM hiccup, device
+    /// re-resolution); pruning on a single miss would wipe the session's true original
+    /// volume and re-adopt the attenuated one — corrupting the restore point. Session
+    /// instance ids are never reused, so a grace period is safe. 40 ticks ≈ 2 s at 20 Hz.
+    /// </summary>
+    public const int PruneGraceTicks = 40;
+
+    public LevelingEngine(
+        IAudioSessionSource source,
+        LevelerSettings settings,
+        VolumeJournal? journal = null,
+        ILoudnessProvider? loudness = null)
     {
         _source = source;
         _settings = settings;
         _journal = journal;
+        _loudness = loudness;
     }
 
     /// <summary>Latest per-session decisions, refreshed by each <see cref="Tick"/>.</summary>
@@ -73,6 +93,25 @@ public sealed class LevelingEngine
         float deadbandHigh = target * (float)Math.Pow(10, deadbandDb / 20.0);
         float deadbandLow = target / (float)Math.Pow(10, deadbandDb / 20.0);
         float blastLevel = target * (float)Math.Pow(10, _settings.BlastThresholdDb / 20.0);
+        double targetLufs = _settings.TargetLufs;
+
+        // Keep the loudness hub tracking exactly the processes we may steer — sessions
+        // that are pinned, excluded, or rule-fixed don't need a capture stream.
+        if (_settings.UseLufs && _loudness is not null)
+        {
+            _lufsEligible.Clear();
+            foreach (IAudioSession session in sessions)
+            {
+                if (session.IsAlive
+                    && !_pinned.Contains(session.Id)
+                    && _settings.ResolveRule(session.ProcessName).Kind == RuleKind.Level)
+                {
+                    _lufsEligible.Add(session.ProcessId);
+                }
+            }
+
+            _loudness.Sync(_lufsEligible);
+        }
 
         foreach (IAudioSession session in sessions)
         {
@@ -162,7 +201,15 @@ public sealed class LevelingEngine
             float smoothedNow = previous + _settings.MeterSmoothing * (raw - previous);
             _smoothed[session.Id] = smoothedNow;
 
-            bool gated = smoothedNow < _settings.NoiseGate;
+            // Perceived loudness (BS.1770 momentary), when the capture path can measure
+            // this process. Post-session-volume — it IS the heard loudness.
+            double lufs = double.NaN;
+            bool lufsAvailable = _settings.UseLufs && _loudness is not null
+                && !excluded && !pinned && rule.Kind == RuleKind.Level
+                && _loudness.TryGetMomentaryLufs(session.ProcessId, out lufs);
+
+            bool gated = smoothedNow < _settings.NoiseGate
+                || (lufsAvailable && lufs < _settings.LufsGate);
             float heard = smoothedNow * volume;
 
             if (!excluded && !pinned && !gated)
@@ -170,8 +217,9 @@ public sealed class LevelingEngine
                 bool isBlast = raw * volume > blastLevel;
                 if (isBlast)
                 {
-                    // Something suddenly screamed well past the target: clamp fast using the
-                    // INSTANT peak (the smoothed estimate lags exactly when it matters most).
+                    // Blast protection stays PEAK-based even on the LUFS path: a 400 ms
+                    // loudness window cannot react to a sudden scream, the instant raw
+                    // peak can (the smoothed/LUFS estimates lag exactly when it matters).
                     _correcting.Add(session.Id);
                     float desired = Math.Clamp(target / Math.Max(raw, 1e-4f), _settings.MinVolume, 1f);
                     float step = Math.Clamp(desired - volume, -_settings.BlastStep, 0f);
@@ -180,12 +228,43 @@ public sealed class LevelingEngine
                         volume += step;
                     }
                 }
+                else if (lufsAvailable)
+                {
+                    // LUFS steering, in the dB domain: error is how far perceived loudness
+                    // sits from the target. Attenuation-only overall (volume caps at 1.0);
+                    // boost only ever undoes our own attenuation. Same hysteresis contract
+                    // as the peak path: settle within ±0.5 dB before resting.
+                    double errorDb = targetLufs - lufs; // negative = too loud
+                    if (Math.Abs(errorDb) > deadbandDb)
+                    {
+                        _correcting.Add(session.Id);
+                    }
+
+                    if (_correcting.Contains(session.Id))
+                    {
+                        bool settled = Math.Abs(errorDb) <= 0.5;
+                        bool unreachable = volume >= 0.999f && errorDb > 0; // quiet app: can't boost past 1.0
+                        if (settled || unreachable)
+                        {
+                            _correcting.Remove(session.Id);
+                        }
+                        else
+                        {
+                            double stepDb = Math.Clamp(errorDb, -_settings.MaxStepDbLufs, _settings.MaxStepDbLufs);
+                            float desired = Math.Clamp(
+                                volume * (float)Math.Pow(10, stepDb / 20.0), _settings.MinVolume, 1f);
+                            if (Math.Abs(desired - volume) > 0.0005f && TrySetVolume(session, desired))
+                            {
+                                volume = desired;
+                            }
+                        }
+                    }
+                }
                 else
                 {
-                    // Hysteresis: leaving the deadband STARTS a correction; once correcting,
-                    // steer all the way to the target centre (±0.5 dB) before resting again.
-                    // A plain deadband would park loud apps at the band's edge instead of
-                    // the target, wasting most of the tolerance.
+                    // Peak fallback (pre-2004 Windows, capture failed, or window filling):
+                    // hysteresis — leaving the deadband STARTS a correction; once correcting,
+                    // steer to the target centre (±0.5 dB) before resting again.
                     if (heard > deadbandHigh || heard < deadbandLow)
                     {
                         _correcting.Add(session.Id);
@@ -222,7 +301,7 @@ public sealed class LevelingEngine
             states.Add(new SessionState(
                 session.Id, session.ProcessId, session.ProcessName,
                 raw, smoothedNow, volume, smoothedNow * volume, excluded, gated,
-                pinned, _correcting.Contains(session.Id)));
+                pinned, _correcting.Contains(session.Id), lufs, lufsAvailable));
         }
 
         // Forget sessions that no longer exist so their state can't leak onto reused ids.
@@ -256,6 +335,7 @@ public sealed class LevelingEngine
         _pinned.Clear();
         _lastSetVolume.Clear();
         _fixedApplied.Clear();
+        _missedTicks.Clear();
     }
 
     /// <summary>
@@ -379,23 +459,29 @@ public sealed class LevelingEngine
 
     private void PruneDead(HashSet<string> alive)
     {
-        foreach (string key in _smoothed.Keys.Where(k => !alive.Contains(k)).ToList())
-        {
-            _smoothed.Remove(key);
-        }
-
+        // Grace period: only forget a session after it has been gone for a while, so a
+        // transient enumeration miss can't wipe its true original volume mid-life.
         foreach (string key in _originalVolume.Keys.Where(k => !alive.Contains(k)).ToList())
         {
+            int missed = _missedTicks.TryGetValue(key, out int m) ? m + 1 : 1;
+            if (missed < PruneGraceTicks)
+            {
+                _missedTicks[key] = missed;
+                continue;
+            }
+
+            _missedTicks.Remove(key);
+            _smoothed.Remove(key);
             _originalVolume.Remove(key);
-        }
-
-        foreach (string key in _lastSetVolume.Keys.Where(k => !alive.Contains(k)).ToList())
-        {
             _lastSetVolume.Remove(key);
+            _correcting.Remove(key);
+            _pinned.Remove(key);
+            _fixedApplied.Remove(key);
         }
 
-        _correcting.RemoveWhere(k => !alive.Contains(k));
-        _pinned.RemoveWhere(k => !alive.Contains(k));
-        _fixedApplied.RemoveWhere(k => !alive.Contains(k));
+        foreach (string key in alive)
+        {
+            _missedTicks.Remove(key); // it's back — reset the clock
+        }
     }
 }

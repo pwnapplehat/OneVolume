@@ -2,6 +2,45 @@
 
 All notable changes to OneVolume are documented here.
 
+## 1.2.0 — 2026-07-18
+
+### Changed — leveling now uses true perceived loudness
+
+- **BS.1770 LUFS steering.** Each steered app is measured with a per-process loopback
+  tap (Windows 10 2004+; read-only, post-session-volume — verified empirically to be
+  exactly what you hear) feeding a streaming ITU-R BS.1770-4 K-weighted momentary meter
+  (400 ms window). The engine steers in the dB domain toward the target's LUFS mapping.
+  This is the same loudness standard YouTube/Spotify/Netflix normalize with, and it
+  fixes the honest weakness of peak metering: a heavily compressed ad and a dynamic
+  movie with identical peaks differ hugely in how loud they *sound*. K-weighting also
+  stops bass-heavy content from being over-attenuated (sub-bass is discounted ≈11 dB;
+  a peak meter can't tell 25 Hz rumble from 1 kHz dialogue).
+- **Quiet scenes ride back up.** On the loudness path the volume recovers (never past
+  100% — attenuation-only still holds) when content gets quieter, instead of staying
+  parked at the level the loudest scene forced.
+- **Peak fallback everywhere it matters.** Capture unavailable (older Windows, exotic
+  sessions) → the 1.1 peak path takes over per-app, automatically. Blast protection
+  deliberately stays peak-based: a 400 ms loudness window cannot clamp a sudden scream;
+  the instantaneous peak can.
+
+### Fixed
+- A transient WASAPI enumeration miss (COM hiccup, device re-resolution) could make the
+  engine forget a live session's true original volume and re-adopt the attenuated one as
+  "original", corrupting the restore point. Session state now survives short enumeration
+  gaps (2 s grace before pruning). Found by the E2E harness during this release.
+
+### Verified
+- 54 unit tests (new: BS.1770 math vs analytic sine values at 48/44.1 kHz, K-weighting
+  frequency behavior, streaming-window semantics, LUFS steering convergence/no-boost/
+  quiet-scene recovery/gating, peak fallback, peak-based blast with LUFS active,
+  capture-hub tracking, prune-grace regression).
+- Spike proved on hardware first: per-process capture isolates the target app's audio
+  at 74.8 dB from a decoy app; measured LUFS within 0.03 dB of the analytic value;
+  the tap is post-session-volume.
+- New hardware E2E (`e2e-lufs`): two tones 9.5 dB apart converge to the same perceived
+  loudness (gap 0.27 dB) through real capture; existing peak and rules E2Es still pass.
+- Perf with capture threads active: ≈0.1–1% CPU, flat memory, flat handles.
+
 ## 1.1.1 — 2026-07-17
 
 ### Added

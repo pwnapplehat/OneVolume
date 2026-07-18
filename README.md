@@ -31,12 +31,21 @@ EarTrumpet) still make **you** do the adjusting.
 ## What OneVolume does
 
 OneVolume watches every app's audio session and gently steers each one toward a single
-target loudness that you choose:
+target loudness that you choose — measured, where Windows allows it, as **true perceived
+loudness** (ITU-R BS.1770 LUFS, the same standard YouTube, Spotify, and Netflix normalize
+with) from a per-app audio tap, not just a peak meter:
 
+- **True loudness, not peaks** — each steered app is measured with a per-process audio
+  tap and a BS.1770 K-weighted momentary meter (Windows 10 2004+), so a heavily
+  compressed ad and a dynamic movie are judged by how loud they *sound*, not how tall
+  their waveform is. Older Windows or apps that can't be tapped automatically fall back
+  to peak metering — leveling always works.
 - **Attenuation-only** — apps that are too loud are eased down; quiet apps are *never*
-  boosted past 100%, so nothing ever distorts or clips.
-- **Blast protection** — a sudden scream (that 2 AM ad) is clamped within a fraction of a
-  second, much faster than the normal gentle ramp.
+  boosted past 100%, so nothing ever distorts or clips. On the loudness path the volume
+  also rides back up (never past 100%) when a quiet scene follows a loud one.
+- **Blast protection stays instant** — a sudden scream (that 2 AM ad) is clamped within a
+  fraction of a second using the instantaneous peak; a 400 ms loudness window can't react
+  that fast, so this deliberately stays peak-based.
 - **Deadband + hysteresis** — inside your tolerance nothing is touched, so volumes never
   "seasick" up and down; once correcting, it settles cleanly at the target.
 - **Silence gating** — apps that aren't playing are ignored (silence never causes a
@@ -67,12 +76,14 @@ It's a tiny tray app. Set the target once, forget it exists.
 ## How it works (and what it doesn't do)
 
 OneVolume uses the standard Windows per-app volume — the same sliders you see in the
-volume mixer — via WASAPI audio session APIs. It reads each session's live meter and
-adjusts that session's volume smoothly at 20 Hz.
+volume mixer — via WASAPI audio session APIs, and adjusts each session smoothly at 20 Hz.
+Loudness is measured with per-process loopback capture (a read-only tap of each steered
+app's audio, post-volume) feeding a streaming BS.1770 K-weighted meter; where capture
+isn't possible the session peak meter takes over.
 
 - No audio drivers, no APOs, no kernel components, no admin rights.
-- It never processes or re-routes your audio — bit-perfect playback stays bit-perfect;
-  only the per-app volume level moves.
+- It never processes or re-routes your audio — the capture tap is read-only and adds no
+  latency; bit-perfect playback stays bit-perfect; only the per-app volume level moves.
 - It never touches the master volume or your physical volume keys.
 - The only network code is one optional, notify-only update check against the GitHub
   releases API at startup ("Don't check again" turns it off permanently). OneVolume
@@ -80,9 +91,10 @@ adjusts that session's volume smoothly at 20 Hz.
   Settings are a JSON file in `%LocalAppData%\OneVolume`.
 
 Honest limitation: because it works at the per-app session level, it levels *between*
-apps (Chrome vs Spotify vs game). Very fast loud/quiet swings *inside* one continuous
-stream are smoothed but not eliminated — that would require processing the audio itself,
-which OneVolume deliberately doesn't do.
+apps (Chrome vs Spotify vs game) and rides slower loud/quiet swings *inside* a stream
+(scene changes, quiet dialogue after action). Sub-second dynamics within one stream are
+smoothed but not eliminated — that would require processing the audio itself
+(compression), which OneVolume deliberately doesn't do.
 
 ## Quick start
 
@@ -100,15 +112,17 @@ which OneVolume deliberately doesn't do.
 ## Architecture
 
 ```
-src/OneVolume.Core/   engine: session abstraction, control loop (deadband, hysteresis,
-                      blast clamp, silence gate, user-override pinning, restore-on-exit),
-                      per-app rules (fixed / exclude / level), crash-safe volume journal,
+src/OneVolume.Core/   engine: session abstraction, control loop (LUFS steering with peak
+                      fallback, deadband, hysteresis, blast clamp, silence gates,
+                      user-override pinning, restore-on-exit), per-app rules
+                      (fixed / exclude / level), BS.1770 K-weighted streaming meter,
+                      per-process loopback capture, crash-safe volume journal,
                       WASAPI session source, settings
 src/OneVolume.App/    WPF tray app (Windows 11 Fluent): live per-app mixer, rules
                       editor with installed-apps browser
 src/OneVolume.Cli/    diagnostics + real-hardware E2E harnesses (spawn their own tone
                       processes and level them — never touch your apps in tests)
-tests/                deterministic engine tests against fake sessions
+tests/                deterministic engine + loudness-math tests
 ```
 
 The control loop is fully unit-tested against fake sessions — convergence, the no-boost

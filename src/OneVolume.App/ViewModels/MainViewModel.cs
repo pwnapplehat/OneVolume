@@ -199,6 +199,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private readonly AppSettings _appSettings;
     private readonly LevelerSettings _levelerSettings = new();
     private readonly WasapiSessionSource _source = new();
+    private readonly OneVolume.Core.Loudness.LoudnessMeterHub _loudness = new();
     private readonly LevelingEngine _engine;
     private readonly DispatcherTimer _timer;
     private string _lastDeviceName = "";
@@ -210,7 +211,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         _appSettings = AppSettings.Load();
         _appSettings.ApplyTo(_levelerSettings);
-        _engine = new LevelingEngine(_source, _levelerSettings, new VolumeJournal());
+        _engine = new LevelingEngine(_source, _levelerSettings, new VolumeJournal(), _loudness);
 
         // If a previous run crashed while apps were attenuated, put their volumes back
         // before doing anything else — an attenuated volume must never become permanent.
@@ -547,6 +548,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             _engine.RestoreOriginalVolumes();
         }
 
+        _loudness.Dispose();
         _source.Dispose();
     }
 
